@@ -1,0 +1,1 @@
+export function calculateCompletion(total:number,completed:number){const safeTotal=Math.max(0,total);const safeCompleted=Math.min(safeTotal,Math.max(0,completed));return {lessonsTotal:safeTotal,lessonsCompleted:safeCompleted,completionPercent:safeTotal?Math.round(safeCompleted/safeTotal*100):0};}

@@ -1,0 +1,1 @@
+{"version":3,"file":"telegram-id-token.dto.js","sourceRoot":"","sources":["../../../../src/modules/auth/dto/telegram-id-token.dto.ts"],"names":[],"mappings":";;;;;;;;;AAAA,OAAO,EAAE,KAAK,EAAE,SAAS,EAAE,MAAM,iBAAiB,CAAC;AAEnD,MAAM,OAAO,kBAAkB;IAG7B,OAAO,CAAU;CAClB;AADC;IAFC,KAAK,EAAE;IACP,SAAS,CAAC,MAAM,CAAC;;mDACD"}

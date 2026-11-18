@@ -1,0 +1,1 @@
+import { ApiProperty } from '@nestjs/swagger';import { IsInt,Max,Min } from 'class-validator';export class WatchProgressDto{@ApiProperty({description:'Observed additional playback seconds; server caps accepted progress using elapsed time'})@IsInt()@Min(1)@Max(300) watchedSecondsDelta!:number;}

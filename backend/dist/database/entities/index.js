@@ -1,0 +1,63 @@
+import { AuditLog } from './audit-log.entity.js';
+import { AnswerOption, Question, StudentAnswer, StudentAnswerOption, Test, TestAttempt, } from './assessment.entity.js';
+import { AuthChallenge, AuthIdentity, PhoneVerification, RefreshToken, Role, User, UserRole, } from './core.entity.js';
+import { Category, Course, CourseCategory, Enrollment, Lesson, LessonPrerequisite, Subject, Video, } from './education.entity.js';
+import { Payment, PaymentTransaction } from './payments.entity.js';
+import { CourseProgress, LessonProgress } from './progress.entity.js';
+import { DeviceToken, Notification } from './notifications.entity.js';
+import { Classroom, GroupSchedule, GroupStudent, LessonSession, StudyGroup, } from './groups.entity.js';
+import { Attendance, AttendanceHistory, AttendanceSession, } from './attendance.entity.js';
+import { Assignment, AssignmentAttachment, AssignmentSubmission, AssignmentSubmissionAttachment, AssignmentSubmissionRevision, AssignmentSubmissionReview, } from './assignments.entity.js';
+import { CrmLead, CrmLeadActivity, CrmLeadStatusHistory, CrmTrialLesson, CrmTrialLessonHistory, } from './crm.entity.js';
+export { NotificationType } from './notifications.entity.js';
+export const educationEntities = [
+    User,
+    Role,
+    UserRole,
+    AuthIdentity,
+    AuthChallenge,
+    RefreshToken,
+    PhoneVerification,
+    Category,
+    Course,
+    CourseCategory,
+    Lesson,
+    LessonPrerequisite,
+    Subject,
+    Video,
+    Enrollment,
+    Test,
+    Question,
+    AnswerOption,
+    TestAttempt,
+    StudentAnswer,
+    StudentAnswerOption,
+    LessonProgress,
+    CourseProgress,
+    Payment,
+    PaymentTransaction,
+    Notification,
+    DeviceToken,
+    StudyGroup,
+    GroupStudent,
+    Classroom,
+    GroupSchedule,
+    LessonSession,
+    Attendance,
+    AttendanceHistory,
+    AttendanceSession,
+    Assignment,
+    AssignmentAttachment,
+    AssignmentSubmission,
+    AssignmentSubmissionRevision,
+    AssignmentSubmissionAttachment,
+    AssignmentSubmissionReview,
+    CrmLead,
+    CrmLeadActivity,
+    CrmLeadStatusHistory,
+    CrmTrialLesson,
+    CrmTrialLessonHistory,
+    AuditLog,
+];
+export { AnswerOption, AuditLog, AuthIdentity, AuthChallenge, Category, Course, CourseCategory, CourseProgress, Classroom, DeviceToken, Enrollment, GroupSchedule, GroupStudent, Lesson, LessonPrerequisite, Subject, LessonSession, LessonProgress, Payment, PaymentTransaction, Notification, PhoneVerification, Question, RefreshToken, Role, StudentAnswer, StudentAnswerOption, StudyGroup, Test, TestAttempt, User, UserRole, Video, Attendance, AttendanceHistory, AttendanceSession, Assignment, AssignmentAttachment, AssignmentSubmission, AssignmentSubmissionRevision, AssignmentSubmissionAttachment, AssignmentSubmissionReview, CrmLead, CrmLeadActivity, CrmLeadStatusHistory, CrmTrialLesson, CrmTrialLessonHistory, };
+//# sourceMappingURL=index.js.map

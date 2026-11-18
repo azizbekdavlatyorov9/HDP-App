@@ -1,0 +1,68 @@
+# Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
+
+# dependencies
+node_modules/
+
+# Expo
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# Native
+.kotlin/
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# Metro
+.metro-health-check*
+
+# debug
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# macOS
+.DS_Store
+*.pem
+
+# local env files
+.env*.local
+
+# xom video manbalar (~1.4 GB) — build'ga kirmaydi, faqat lokal arxiv
+1-mavzu/
+
+# typescript
+*.tsbuildinfo
+
+# generated native folders
+/ios
+/android
+
+# Local Netlify folder
+.netlify
+
+# Cloudflare Worker
+.wrangler/
+backend/.dev.vars
+
+# MCP configurations with secrets
+.mcp.json
+.agents/
+config.bat
+# Dependencies and build output
+node_modules/
+dist/
+.expo/
+
+# Local environment files (keep example templates)
+.env
+.env.*
+!.env.example
+
+# Android Gradle cache
+android/.gradle/

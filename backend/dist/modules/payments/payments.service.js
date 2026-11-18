@@ -1,0 +1,222 @@
+var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
+    var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
+    if (typeof Reflect === "object" && typeof Reflect.decorate === "function") r = Reflect.decorate(decorators, target, key, desc);
+    else for (var i = decorators.length - 1; i >= 0; i--) if (d = decorators[i]) r = (c < 3 ? d(r) : c > 3 ? d(target, key, r) : d(target, key)) || r;
+    return c > 3 && r && Object.defineProperty(target, key, r), r;
+};
+var __metadata = (this && this.__metadata) || function (k, v) {
+    if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
+};
+var __param = (this && this.__param) || function (paramIndex, decorator) {
+    return function (target, key) { decorator(target, key, paramIndex); }
+};
+import { BadRequestException, ConflictException, Injectable, NotFoundException, Optional } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { ConfigService } from '@nestjs/config';
+import { DataSource, In, LessThan, Repository } from 'typeorm';
+import { Course, Enrollment, NotificationType, Payment, PaymentTransaction } from '../../database/entities/index.js';
+import { ClickProvider } from './click.provider.js';
+import { PaymeProvider } from './payme.provider.js';
+import { NotificationsService } from '../notifications/notifications.service.js';
+const PAYME_ERRORS = { unauthorized: -32504, notFound: -31003, invalidAmount: -31001, invalidState: -31008, invalidAccount: -31050, system: -32400 };
+let PaymentsService = class PaymentsService {
+    payments;
+    transactions;
+    courses;
+    enrollments;
+    db;
+    payme;
+    click;
+    config;
+    notifications;
+    constructor(payments, transactions, courses, enrollments, db, payme, click, config, notifications) {
+        this.payments = payments;
+        this.transactions = transactions;
+        this.courses = courses;
+        this.enrollments = enrollments;
+        this.db = db;
+        this.payme = payme;
+        this.click = click;
+        this.config = config;
+        this.notifications = notifications;
+    }
+    provider(name) { return name === 'payme' ? this.payme : this.click; }
+    async expireStalePayments() { const cutoff = new Date(Date.now() - 12 * 60 * 60 * 1000); const candidates = await this.payments.find({ where: { status: In(['pending', 'processing']), createdAt: LessThan(cutoff) }, select: { id: true } }); for (const candidate of candidates)
+        await this.db.transaction(async (m) => { const repo = m.getRepository(Payment); const payment = await repo.findOne({ where: { id: candidate.id }, relations: { user: true, course: true }, lock: { mode: 'pessimistic_write' } }); if (!payment || !['pending', 'processing'].includes(payment.status))
+            return; const txRepo = m.getRepository(PaymentTransaction); const txs = await txRepo.find({ where: { payment: { id: payment.id } }, lock: { mode: 'pessimistic_write' } }); if (txs.some(t => t.status === 'succeeded'))
+            return; const now = Date.now(); let changed = false; for (const tx of txs) {
+            if (tx.status === 'refunded' || tx.status === 'failed')
+                continue;
+            const reference = tx.provider === 'payme' ? (tx.providerCreatedAt ?? tx.createdAt) : (tx.occurredAt ?? tx.createdAt);
+            if (now - reference.getTime() < 12 * 60 * 60 * 1000)
+                continue;
+            tx.status = 'failed';
+            tx.eventType = 'expired';
+            tx.occurredAt = new Date(now);
+            if (tx.provider === 'payme') {
+                tx.providerCancelledAt = tx.occurredAt;
+                tx.providerCancelReason = 4;
+            }
+            await txRepo.save(tx);
+            changed = true;
+        } if (changed && txs.every(t => t.status === 'failed' || t.status === 'refunded')) {
+            payment.status = 'failed';
+            await repo.save(payment);
+        } }); }
+    async paymentView(id, userId) { const where = { id }; if (userId)
+        where.user = { id: userId }; const p = await this.payments.findOne({ where, relations: { course: true, transactions: true } }); if (!p)
+        throw new NotFoundException('Payment not found'); return { id: p.id, course: { id: p.course.id, title: p.course.title }, amountMinor: p.amountMinor, currency: p.currency, status: p.status, paidAt: p.paidAt, refundedAt: p.refundedAt, createdAt: p.createdAt, transactions: p.transactions.map(t => ({ id: t.id, provider: t.provider, providerTransactionId: t.providerTransactionId, status: t.status, eventType: t.eventType, occurredAt: t.occurredAt, createdAt: t.createdAt })) }; }
+    async create(dto, user) {
+        this.provider(dto.provider).assertConfigured();
+        const prior = await this.payments.findOne({ where: { user: { id: user.id }, idempotencyKey: dto.idempotencyKey }, relations: { course: true, transactions: true } });
+        if (prior) {
+            if (prior.course.id !== dto.courseId || !prior.transactions.some(t => t.provider === dto.provider))
+                throw new ConflictException('Idempotency key already used for a different payment');
+            return { payment: await this.paymentView(prior.id, user.id), checkout: this.provider(dto.provider).createCheckout(prior) };
+        }
+        const course = await this.courses.findOne({ where: { id: dto.courseId, status: 'published' } });
+        if (!course)
+            throw new NotFoundException('Published course not found');
+        if (course.currency.toUpperCase() !== 'UZS')
+            throw new BadRequestException('Payme and Click checkout currently support UZS courses only');
+        const payment = await this.db.transaction(async (manager) => {
+            const p = await manager.getRepository(Payment).save(manager.getRepository(Payment).create({ user: { id: user.id }, course, amountMinor: course.priceMinor, currency: course.currency.toUpperCase(), status: 'pending', idempotencyKey: dto.idempotencyKey, paidAt: null, refundedAt: null }));
+            await manager.getRepository(PaymentTransaction).save(manager.getRepository(PaymentTransaction).create({ payment: p, provider: dto.provider, providerTransactionId: null, providerEventId: null, status: 'initiated', eventType: 'checkout_created', occurredAt: new Date() }));
+            return p;
+        });
+        const reloaded = await this.payments.findOneOrFail({ where: { id: payment.id }, relations: { transactions: true } });
+        return { payment: await this.paymentView(payment.id, user.id), checkout: this.provider(dto.provider).createCheckout(reloaded) };
+    }
+    async mine(user, page = 1, limit = 20) { await this.expireStalePayments(); const [rows, total] = await this.payments.findAndCount({ where: { user: { id: user.id } }, relations: { course: true }, order: { createdAt: 'DESC' }, skip: (page - 1) * limit, take: limit }); return { data: rows.map(p => ({ id: p.id, course: { id: p.course.id, title: p.course.title }, amountMinor: p.amountMinor, currency: p.currency, status: p.status, paidAt: p.paidAt, createdAt: p.createdAt })), pagination: { page, limit, total, pages: Math.ceil(total / limit) } }; }
+    async ownDetail(id, u) { await this.expireStalePayments(); return this.paymentView(id, u.id); }
+    async adminList(q) { await this.expireStalePayments(); const page = Math.max(1, Number(q.page) || 1), limit = Math.min(100, Math.max(1, Number(q.limit) || 20)); const qb = this.payments.createQueryBuilder('p').leftJoinAndSelect('p.user', 'u').leftJoinAndSelect('p.course', 'c').leftJoinAndSelect('p.transactions', 'tx'); if (q.status)
+        qb.andWhere('p.status=:status', { status: q.status }); if (q.provider)
+        qb.andWhere('tx.provider=:provider', { provider: q.provider }); if (q.userId)
+        qb.andWhere('u.id=:userId', { userId: q.userId }); if (q.from)
+        qb.andWhere('p.createdAt>=:from', { from: new Date(q.from) }); if (q.to)
+        qb.andWhere('p.createdAt<=:to', { to: new Date(q.to) }); const [rows, total] = await qb.orderBy('p.createdAt', 'DESC').skip((page - 1) * limit).take(limit).getManyAndCount(); return { data: rows.map(p => this.adminMap(p)), pagination: { page, limit, total, pages: Math.ceil(total / limit) } }; }
+    adminMap(p) { return { id: p.id, user: { id: p.user.id, displayName: p.user.displayName }, course: { id: p.course.id, title: p.course.title }, amountMinor: p.amountMinor, currency: p.currency, status: p.status, paidAt: p.paidAt, refundedAt: p.refundedAt, createdAt: p.createdAt, transactions: (p.transactions ?? []).map(t => ({ id: t.id, provider: t.provider, providerTransactionId: t.providerTransactionId, providerEventId: t.providerEventId, clickPrepareId: t.clickPrepareId, status: t.status, eventType: t.eventType, occurredAt: t.occurredAt, createdAt: t.createdAt })) }; }
+    async adminDetail(id) { const p = await this.payments.findOne({ where: { id }, relations: { user: true, course: true, transactions: true } }); if (!p)
+        throw new NotFoundException(); return this.adminMap(p); }
+    async statistics() { const rows = await this.payments.createQueryBuilder('p').select('p.status', 'status').addSelect('COUNT(*)', 'count').addSelect('COALESCE(SUM(p.amount_minor),0)', 'amountMinor').groupBy('p.status').getRawMany(); return rows.map(r => ({ status: r.status, count: Number(r.count), amountMinor: r.amountMinor })); }
+    async refund(id, actor, reason) { const p = await this.payments.findOne({ where: { id }, relations: { transactions: true } }); if (!p)
+        throw new NotFoundException(); if (p.status !== 'succeeded')
+        throw new ConflictException('Only successful payments can be refunded'); const t = p.transactions.find(x => x.status === 'succeeded'); if (!t?.providerTransactionId)
+        throw new ConflictException('Successful provider transaction not found'); await this.provider(t.provider).refund(p, t.providerTransactionId); void actor; void reason; return { id: p.id, status: p.status }; }
+    async expirePayment(manager, payment, tx) { const reference = tx.provider === 'payme' ? (tx.providerCreatedAt ?? tx.occurredAt ?? tx.createdAt) : (tx.occurredAt ?? tx.createdAt); const ttl = 12 * 60 * 60 * 1000; if (Date.now() - reference.getTime() < ttl)
+        return false; if (payment.status === 'succeeded' || payment.status === 'refunded')
+        return false; payment.status = 'failed'; tx.status = 'failed'; tx.eventType = 'expired'; tx.occurredAt = new Date(); if (tx.provider === 'payme') {
+        tx.providerCancelledAt = tx.occurredAt;
+        tx.providerCancelReason = 4;
+    } await manager.getRepository(Payment).save(payment); await manager.getRepository(PaymentTransaction).save(tx); return true; }
+    async activateEnrollment(manager, p) { await manager.query('SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))', [p.user.id, p.course.id]); const repo = manager.getRepository(Enrollment); const existing = await repo.findOne({ where: { user: { id: p.user.id }, course: { id: p.course.id } }, lock: { mode: 'pessimistic_write' } }); if (existing) {
+        if (existing.status !== 'active') {
+            existing.status = 'active';
+            existing.source = 'payment';
+            existing.enrolledAt = new Date();
+            existing.expiresAt = null;
+            await repo.save(existing);
+        }
+        return;
+    } await repo.save(repo.create({ user: p.user, course: p.course, status: 'active', source: 'payment', enrolledAt: new Date(), expiresAt: null })); }
+    paymeError(id, code, message, data) { return { jsonrpc: '2.0', id: id ?? null, error: { code, message, data } }; }
+    async paymeRpc(request) { const id = request.id ?? null; if (request.jsonrpc !== '2.0' || typeof request.method !== 'string' || !request.method)
+        return this.paymeError(id, -32600, 'Invalid JSON-RPC request'); const p = request.params ?? {}; try {
+        let result;
+        switch (request.method) {
+            case 'CheckPerformTransaction':
+                result = await this.paymeCheck(p, id);
+                break;
+            case 'CreateTransaction':
+                result = await this.paymeCreate(p, id);
+                break;
+            case 'PerformTransaction':
+                result = await this.paymePerform(p, id);
+                break;
+            case 'CancelTransaction':
+                result = await this.paymeCancel(p, id);
+                break;
+            case 'CheckTransaction':
+                result = await this.paymeCheckTransaction(p, id);
+                break;
+            case 'GetStatement':
+                result = await this.paymeStatement(p, id);
+                break;
+            default: return this.paymeError(id, -32601, 'Method not found', request.method);
+        }
+        const rpc = result;
+        if (this.notifications && request.method === 'PerformTransaction' && rpc.result?.state === 2)
+            await this.notifyPayment(request.params?.id, NotificationType.PAYMENT_SUCCESS);
+        if (this.notifications && request.method === 'CancelTransaction' && [-1, -2].includes(rpc.result?.state ?? 0))
+            await this.notifyPayment(request.params?.id, NotificationType.PAYMENT_CANCELLED);
+        return result;
+    }
+    catch (e) {
+        if (e instanceof NotFoundException)
+            return this.paymeError(id, PAYME_ERRORS.notFound, 'Transaction not found');
+        if (e instanceof BadRequestException)
+            return this.paymeError(id, PAYME_ERRORS.invalidAmount, 'Invalid amount or parameters');
+        return this.paymeError(id, PAYME_ERRORS.system, 'System error');
+    } }
+    async notifyPayment(providerTransactionId, type) { if (!this.notifications)
+        return; const tx = await this.transactions.findOne({ where: { providerTransactionId, provider: 'payme' }, relations: { payment: { user: true, course: true } } }); if (!tx)
+        return; const suffix = type === NotificationType.PAYMENT_SUCCESS ? 'success' : 'cancelled'; await this.notifications.createAndDeliverMany([tx.payment.user.id], { type, title: type === NotificationType.PAYMENT_SUCCESS ? 'Payment successful' : 'Payment cancelled', body: tx.payment.course.title, relatedEntityId: tx.payment.id, eventKey: `payment-${suffix}:${tx.payment.id}` }); if (type === NotificationType.PAYMENT_SUCCESS)
+        await this.notifications.createAndDeliverMany([tx.payment.user.id], { type: NotificationType.ENROLLMENT_CREATED, title: 'Course access ready', body: tx.payment.course.title, relatedEntityId: tx.payment.course.id, eventKey: `enrollment-created:${tx.payment.id}` }); }
+    async paymeCheck(p, id) { const account = p.account; const paymentId = account?.order_id; if (typeof paymentId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(paymentId))
+        return this.paymeError(id, PAYME_ERRORS.invalidAccount, 'Invalid order_id', 'account'); const payment = await this.payments.findOne({ where: { id: paymentId }, relations: { course: true } }); if (!payment)
+        return this.paymeError(id, PAYME_ERRORS.invalidAccount, 'Payment account not found', 'account'); if (!['pending', 'processing'].includes(payment.status))
+        return this.paymeError(id, PAYME_ERRORS.invalidState, 'Payment is unavailable'); if (!Number.isSafeInteger(p.amount) || String(p.amount) !== payment.amountMinor)
+        return this.paymeError(id, PAYME_ERRORS.invalidAmount, 'Incorrect amount'); return { jsonrpc: '2.0', id, result: { allow: true } }; }
+    async paymeCreate(p, id) { const account = p.account; const paymentId = account?.order_id; const providerId = p.id; const time = p.time; const amount = p.amount; if (typeof paymentId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(paymentId))
+        return this.paymeError(id, PAYME_ERRORS.invalidAccount, 'Invalid order_id', 'account'); if (typeof providerId !== 'string' || providerId.length !== 24)
+        return this.paymeError(id, -32600, 'Invalid transaction id'); if (typeof time !== 'number' || !Number.isSafeInteger(time) || time < 1_000_000_000_000 || typeof amount !== 'number' || !Number.isSafeInteger(amount) || amount <= 0)
+        return this.paymeError(id, -32600, 'Invalid timestamp or amount'); if (time > Date.now() + 5 * 60 * 1000 || Date.now() - time > 12 * 60 * 60 * 1000)
+        return this.paymeError(id, PAYME_ERRORS.invalidState, 'Transaction timestamp is outside the allowed window'); return this.db.transaction(async (m) => { const pay = await m.getRepository(Payment).findOne({ where: { id: paymentId }, relations: { user: true, course: true }, lock: { mode: 'pessimistic_write' } }); if (!pay)
+        return this.paymeError(id, PAYME_ERRORS.invalidAccount, 'Payment account not found', 'account'); if (!['pending', 'processing'].includes(pay.status))
+        return this.paymeError(id, PAYME_ERRORS.invalidState, 'Payment is unavailable'); if (String(amount) !== pay.amountMinor)
+        return this.paymeError(id, PAYME_ERRORS.invalidAmount, 'Incorrect amount'); let tx = await m.getRepository(PaymentTransaction).findOne({ where: { provider: 'payme', providerTransactionId: providerId }, relations: { payment: true }, lock: { mode: 'pessimistic_write' } }); if (tx) {
+        if (tx.payment.id !== pay.id)
+            return this.paymeError(id, PAYME_ERRORS.invalidState, 'Transaction already bound to another order');
+        if (tx.status === 'pending' || tx.status === 'succeeded')
+            return { jsonrpc: '2.0', id, result: { transaction: tx.id, create_time: tx.providerCreatedAt?.getTime() ?? tx.occurredAt?.getTime() ?? tx.createdAt.getTime(), state: tx.status === 'succeeded' ? 2 : 1 } };
+        return this.paymeError(id, PAYME_ERRORS.invalidState, 'Transaction is cancelled');
+    } tx = await m.getRepository(PaymentTransaction).findOne({ where: { payment: { id: pay.id }, provider: 'payme', status: 'initiated' }, lock: { mode: 'pessimistic_write' } }); if (!tx)
+        return this.paymeError(id, PAYME_ERRORS.invalidState, 'Payment transaction unavailable'); tx.providerTransactionId = providerId; tx.status = 'pending'; tx.eventType = 'CreateTransaction'; tx.providerCreatedAt = new Date(time); tx.occurredAt = tx.providerCreatedAt; pay.status = 'processing'; await m.getRepository(PaymentTransaction).save(tx); await m.getRepository(Payment).save(pay); return { jsonrpc: '2.0', id, result: { transaction: tx.id, create_time: tx.occurredAt.getTime(), state: 1 } }; }); }
+    async paymePerform(p, id) { const providerId = p.id; if (typeof providerId !== 'string' || providerId.length !== 24)
+        return this.paymeError(id, PAYME_ERRORS.notFound, 'Transaction not found'); return this.db.transaction(async (m) => { const tx = await m.getRepository(PaymentTransaction).findOne({ where: { provider: 'payme', providerTransactionId: providerId }, relations: { payment: { user: true, course: true } }, lock: { mode: 'pessimistic_write' } }); if (!tx)
+        return this.paymeError(id, PAYME_ERRORS.notFound, 'Transaction not found'); const pay = await m.getRepository(Payment).findOne({ where: { id: tx.payment.id }, relations: { user: true, course: true }, lock: { mode: 'pessimistic_write' } }); if (!pay)
+        return this.paymeError(id, PAYME_ERRORS.notFound, 'Payment not found'); if (tx.status === 'succeeded')
+        return { jsonrpc: '2.0', id, result: { transaction: tx.id, perform_time: pay.paidAt?.getTime() ?? Date.now(), state: 2 } }; if (tx.status !== 'pending')
+        return this.paymeError(id, PAYME_ERRORS.invalidState, 'Transaction state does not allow payment'); if (await this.expirePayment(m, pay, tx))
+        return this.paymeError(id, PAYME_ERRORS.invalidState, 'Transaction expired'); pay.status = 'succeeded'; pay.paidAt = new Date(); tx.status = 'succeeded'; tx.eventType = 'PerformTransaction'; tx.providerPerformedAt = new Date(); tx.occurredAt = tx.providerCreatedAt ?? tx.occurredAt; await m.getRepository(Payment).save(pay); await m.getRepository(PaymentTransaction).save(tx); await this.activateEnrollment(m, pay); return { jsonrpc: '2.0', id, result: { transaction: tx.id, perform_time: pay.paidAt.getTime(), state: 2 } }; }); }
+    async paymeCancel(p, id) { if (typeof p.id !== 'string' || p.id.length !== 24)
+        return this.paymeError(id, PAYME_ERRORS.notFound, 'Transaction not found'); if (!Number.isInteger(p.reason) || ![1, 2, 3, 4, 5, 10].includes(p.reason))
+        return this.paymeError(id, -32600, 'Invalid cancellation reason'); const providerId = p.id; const cancelReason = p.reason; return this.db.transaction(async (m) => { const tx = await m.getRepository(PaymentTransaction).findOne({ where: { provider: 'payme', providerTransactionId: providerId }, relations: { payment: { user: true, course: true } }, lock: { mode: 'pessimistic_write' } }); if (!tx)
+        return this.paymeError(id, PAYME_ERRORS.notFound, 'Transaction not found'); const pay = await m.getRepository(Payment).findOne({ where: { id: tx.payment.id }, relations: { user: true, course: true }, lock: { mode: 'pessimistic_write' } }); if (!pay)
+        return this.paymeError(id, PAYME_ERRORS.notFound, 'Payment not found'); if (tx.status === 'failed' || tx.status === 'refunded')
+        return { jsonrpc: '2.0', id, result: { transaction: tx.id, cancel_time: tx.occurredAt?.getTime() ?? Date.now(), state: pay.status === 'refunded' ? -2 : -1 } }; if (tx.status !== 'pending' && tx.status !== 'succeeded')
+        return this.paymeError(id, PAYME_ERRORS.invalidState, 'Transaction cannot be cancelled'); const wasPaid = tx.status === 'succeeded'; tx.status = wasPaid ? 'refunded' : 'failed'; tx.eventType = 'CancelTransaction'; tx.providerCancelReason = cancelReason; tx.providerCancelledAt = new Date(); tx.occurredAt = tx.providerCancelledAt; pay.status = wasPaid ? 'refunded' : 'failed'; if (wasPaid) {
+        pay.refundedAt = new Date();
+        const er = await m.getRepository(Enrollment).findOne({ where: { user: { id: pay.user.id }, course: { id: pay.course.id } }, lock: { mode: 'pessimistic_write' } });
+        if (er) {
+            er.status = 'revoked';
+            await m.getRepository(Enrollment).save(er);
+        }
+    } await m.getRepository(PaymentTransaction).save(tx); await m.getRepository(Payment).save(pay); return { jsonrpc: '2.0', id, result: { transaction: tx.id, cancel_time: tx.occurredAt.getTime(), state: wasPaid ? -2 : -1 } }; }); }
+    async paymeCheckTransaction(p, id) { if (typeof p.id !== 'string' || p.id.length !== 24)
+        return this.paymeError(id, PAYME_ERRORS.notFound, 'Transaction not found'); const tx = await this.transactions.findOne({ where: { provider: 'payme', providerTransactionId: p.id }, relations: { payment: true } }); if (!tx)
+        return this.paymeError(id, PAYME_ERRORS.notFound, 'Transaction not found'); const state = tx.status === 'succeeded' ? 2 : tx.status === 'refunded' ? -2 : tx.status === 'failed' ? -1 : 1; return { jsonrpc: '2.0', id, result: { create_time: tx.providerCreatedAt?.getTime() ?? tx.createdAt.getTime(), perform_time: state === 2 ? tx.providerPerformedAt?.getTime() ?? 0 : 0, cancel_time: state < 0 ? tx.providerCancelledAt?.getTime() ?? 0 : 0, transaction: tx.id, state, reason: state < 0 ? tx.providerCancelReason : null } }; }
+    async paymeStatement(p, id) { if (typeof p.from !== 'number' || typeof p.to !== 'number' || !Number.isSafeInteger(p.from) || !Number.isSafeInteger(p.to) || p.from < 1000000000000 || p.to < 1000000000000 || p.from > p.to)
+        return this.paymeError(id, -32600, 'Invalid params'); const rows = await this.transactions.createQueryBuilder('tx').innerJoinAndSelect('tx.payment', 'payment').where("tx.provider='payme' AND tx.provider_transaction_id IS NOT NULL AND tx.provider_created_at BETWEEN :from AND :to", { from: new Date(p.from), to: new Date(p.to) }).orderBy('tx.providerCreatedAt', 'ASC').getMany(); return { jsonrpc: '2.0', id, result: { transactions: rows.map(tx => ({ id: tx.providerTransactionId, time: tx.providerCreatedAt?.getTime() ?? tx.createdAt.getTime(), amount: Number(tx.payment.amountMinor), account: { order_id: tx.payment.id }, create_time: tx.providerCreatedAt?.getTime() ?? tx.createdAt.getTime(), perform_time: tx.providerPerformedAt?.getTime() ?? 0, cancel_time: tx.providerCancelledAt?.getTime() ?? 0, transaction: tx.id, state: tx.status === 'succeeded' ? 2 : tx.status === 'refunded' ? -2 : tx.status === 'failed' ? -1 : 1, reason: tx.providerCancelReason })) } }; }
+};
+PaymentsService = __decorate([
+    Injectable(),
+    __param(0, InjectRepository(Payment)),
+    __param(1, InjectRepository(PaymentTransaction)),
+    __param(2, InjectRepository(Course)),
+    __param(3, InjectRepository(Enrollment)),
+    __param(8, Optional()),
+    __metadata("design:paramtypes", [Repository, Repository, Repository, Repository, DataSource, PaymeProvider, ClickProvider, ConfigService, NotificationsService])
+], PaymentsService);
+export { PaymentsService };
+//# sourceMappingURL=payments.service.js.map

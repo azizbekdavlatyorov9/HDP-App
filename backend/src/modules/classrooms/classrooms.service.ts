@@ -1,0 +1,16 @@
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { DataSource, In, MoreThan, Repository } from 'typeorm';
+import { Classroom, GroupSchedule, LessonSession } from '../../database/entities/index.js';
+import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.js';
+import type { ClassroomCreateDto, ClassroomUpdateDto } from './classrooms.dto.js';
+@Injectable()
+export class ClassroomsService {
+ constructor(@InjectRepository(Classroom) private readonly rooms:Repository<Classroom>,@InjectRepository(GroupSchedule) private readonly schedules:Repository<GroupSchedule>,@InjectRepository(LessonSession) private readonly sessions:Repository<LessonSession>,private readonly db:DataSource){}
+ private admin(u:AuthenticatedUser){return u.roles.includes('ADMIN')||u.roles.includes('SUPER_ADMIN');}
+ async create(dto:ClassroomCreateDto,u:AuthenticatedUser){if(!this.admin(u))throw new ForbiddenException();if(await this.rooms.exists({where:{code:dto.code}}))throw new ConflictException('Room code already exists');return this.rooms.save(this.rooms.create({...dto,location:dto.location??null,description:dto.description??null,isActive:true}));}
+ async list(includeInactive:boolean,u:AuthenticatedUser){return this.rooms.find({where:includeInactive&&this.admin(u)?{}:{isActive:true},order:{name:'ASC'}});}
+ async get(id:string){const room=await this.rooms.findOne({where:{id}});if(!room)throw new NotFoundException('Classroom not found');return room;}
+ async update(id:string,dto:ClassroomUpdateDto,u:AuthenticatedUser){if(!this.admin(u))throw new ForbiddenException();return this.db.transaction(async m=>{await m.query('SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))',['schedule-resource:'+id,id]);const repo=m.getRepository(Classroom);const room=await repo.findOne({where:{id},lock:{mode:'pessimistic_write'}});if(!room)throw new NotFoundException('Classroom not found');if(dto.code&&dto.code!==room.code&&await repo.exists({where:{code:dto.code}}))throw new ConflictException('Room code already exists');if(dto.capacity!==undefined){const schedules=await m.getRepository(GroupSchedule).find({where:{classroom:{id},isActive:true},relations:{group:true}});if(schedules.some(s=>s.group.capacity>dto.capacity!))throw new BadRequestException('Classroom capacity cannot be below an assigned group capacity');const future=await m.getRepository(LessonSession).find({where:{classroom:{id},status:In(['SCHEDULED','IN_PROGRESS']),startAt:MoreThan(new Date())},relations:{group:true}});if(future.some(s=>s.group.capacity>dto.capacity!))throw new BadRequestException('Classroom capacity cannot be below a future session group capacity');}Object.assign(room,dto);return repo.save(room);});}
+ async setActive(id:string,isActive:boolean,u:AuthenticatedUser){if(!this.admin(u))throw new ForbiddenException();return this.db.transaction(async m=>{await m.query('SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))',['schedule-resource:'+id,id]);const repo=m.getRepository(Classroom);const room=await repo.findOne({where:{id},lock:{mode:'pessimistic_write'}});if(!room)throw new NotFoundException('Classroom not found');room.isActive=isActive;return repo.save(room);});}
+}

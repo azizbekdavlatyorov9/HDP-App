@@ -1,0 +1,8 @@
+import { ApiProperty,ApiPropertyOptional } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
+import { ArrayMinSize,ArrayUnique,IsArray,IsBoolean,IsInt,IsOptional,IsString,IsUUID,Length,Max,Min,ValidateNested } from 'class-validator';
+export class OptionDto { @ApiProperty() @IsString() @Length(1,500) text!:string; @ApiProperty() @IsBoolean() isCorrect!:boolean; }
+export class QuestionDto { @ApiProperty() @IsString() prompt!:string; @ApiProperty() @IsInt() @Min(1) points=1; @ApiProperty() @IsBoolean() allowMultipleAnswers=false; @ApiProperty({type:[OptionDto]}) @IsArray() @ArrayMinSize(2) @ValidateNested({each:true}) @Type(()=>OptionDto) options!:OptionDto[]; }
+export class CreateTestDto { @ApiPropertyOptional() @IsOptional() @IsUUID() courseId?:string; @ApiPropertyOptional() @IsOptional() @IsUUID() lessonId?:string; @ApiProperty() @IsString() @Length(1,180) title!:string; @ApiPropertyOptional() @IsOptional() @IsString() description?:string; @ApiProperty() @IsInt() @Min(0) @Max(100) passingScore=60; @ApiPropertyOptional() @IsOptional() @IsInt() @Min(1) timeLimitSeconds?:number; @ApiPropertyOptional() @IsOptional() @IsInt() @Min(1) attemptLimit?:number; @ApiProperty({type:[QuestionDto]}) @IsArray() @ArrayMinSize(1) @ValidateNested({each:true}) @Type(()=>QuestionDto) questions!:QuestionDto[]; }
+export class SubmitAnswerDto { @ApiProperty() @IsUUID() questionId!:string; @ApiProperty({type:[String]}) @IsArray() @ArrayUnique() @IsUUID('4',{each:true}) optionIds!:string[]; }
+export class SubmitTestDto { @ApiProperty({type:[SubmitAnswerDto]}) @IsArray() @ValidateNested({each:true}) @Type(()=>SubmitAnswerDto) answers!:SubmitAnswerDto[]; }

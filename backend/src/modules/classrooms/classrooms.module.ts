@@ -1,0 +1,2 @@
+import { Module } from '@nestjs/common';import { TypeOrmModule } from '@nestjs/typeorm';import { Classroom,GroupSchedule,LessonSession } from '../../database/entities/index.js';import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';import { ClassroomsController } from './classrooms.controller.js';import { ClassroomsService } from './classrooms.service.js';
+@Module({imports:[TypeOrmModule.forFeature([Classroom,GroupSchedule,LessonSession])],controllers:[ClassroomsController],providers:[ClassroomsService,JwtAuthGuard]}) export class ClassroomsModule{}

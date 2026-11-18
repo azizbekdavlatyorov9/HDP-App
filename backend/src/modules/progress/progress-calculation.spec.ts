@@ -1,0 +1,2 @@
+import { describe,expect,it } from 'vitest';import { calculateCompletion } from './progress-calculation.js';
+describe('course progress calculation',()=>{it('calculates rounded course completion',()=>{expect(calculateCompletion(3,2)).toEqual({lessonsTotal:3,lessonsCompleted:2,completionPercent:67});});it('clamps invalid counts and handles empty courses',()=>{expect(calculateCompletion(0,4)).toEqual({lessonsTotal:0,lessonsCompleted:0,completionPercent:0});expect(calculateCompletion(2,8).completionPercent).toBe(100);});});

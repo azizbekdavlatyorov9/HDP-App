@@ -1,0 +1,7 @@
+# Phase 5 database notes
+
+No migration was executed. The new additive migration `20261104170000-Phase5PaymentSupport` adds the previously documented Phase 4 `categories.archived_at TIMESTAMPTZ` column, a database sequence plus nullable unique `payment_transactions.click_prepare_id BIGINT` column, and Payme creation/performance/cancellation timestamps and cancellation reason on `payment_transactions`. Click requires a stable numeric prepare reference; the sequence supplies it without deriving it from untrusted callback input. Payme uses the timestamp fields to answer `CheckTransaction` and `GetStatement`. `synchronize` remains disabled.
+
+Review the migration against the target database before applying it. Do not run it until separately approved. It assumes the original payments tables exist as described by the existing initial schema migration and that the Phase 4 category column has not already been added by another migration.
+
+Payme refunds can be reported through its authenticated `CancelTransaction` callback; the reviewed Merchant API does not provide a server-initiated refund call. Click Shop API Prepare/Complete is implemented, but an outbound refund/reversal endpoint and credentials were not established from the reviewed official callback documentation. The admin refund endpoint therefore fails safely with `NotImplemented` for both providers until an approved provider refund capability is supplied.

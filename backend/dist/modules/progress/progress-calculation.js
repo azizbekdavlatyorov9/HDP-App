@@ -1,0 +1,2 @@
+export function calculateCompletion(total, completed) { const safeTotal = Math.max(0, total); const safeCompleted = Math.min(safeTotal, Math.max(0, completed)); return { lessonsTotal: safeTotal, lessonsCompleted: safeCompleted, completionPercent: safeTotal ? Math.round(safeCompleted / safeTotal * 100) : 0 }; }
+//# sourceMappingURL=progress-calculation.js.map
